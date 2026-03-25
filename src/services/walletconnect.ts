@@ -6,6 +6,7 @@ import { ACTIVE_HATHOR_NETWORK } from '../config/network';
 // WalletConnect Project ID - Get yours at https://cloud.walletconnect.com
 const PROJECT_ID = import.meta.env.VITE_WALLETCONNECT_PROJECT_ID || 'YOUR_PROJECT_ID';
 const STORAGE_PREFIX = `poll-${ACTIVE_HATHOR_NETWORK.chainId.replace(':', '-')}`;
+const HATHOR_WALLET_DEEP_LINK_SCHEME = 'hathorwallet';
 
 // Required methods for Hathor wallet - match pXiel exactly
 const REQUIRED_METHODS = ['htr_signWithAddress', 'htr_sendNanoContractTx'];
@@ -59,6 +60,19 @@ const sessionMatchesActiveChain = (session: any): boolean => {
         accounts.some((account: string) => account.startsWith(`${ACTIVE_HATHOR_NETWORK.chainId}:`));
 };
 
+const isMobileWalletConnectFlow = () => {
+    if (typeof window === 'undefined') return false;
+
+    return /Android|iPhone|iPad|iPod/i.test(window.navigator.userAgent);
+};
+
+const openHathorWalletDeepLink = (wcUri: string) => {
+    if (typeof window === 'undefined') return;
+
+    const deepLink = `${HATHOR_WALLET_DEEP_LINK_SCHEME}://wc?uri=${encodeURIComponent(wcUri)}`;
+    window.location.href = deepLink;
+};
+
 export const WalletConnectService = {
     /**
      * Initialize the WalletConnect Sign Client and Modal
@@ -67,9 +81,12 @@ export const WalletConnectService = {
         if (signClient) return signClient;
 
         // Initialize the WalletConnectModal - like pXiel does
-        wcModal = new WalletConnectModal({
-            projectId: PROJECT_ID
-        });
+        const modalConfig = {
+            projectId: PROJECT_ID,
+            walletConnectVersion: 2,
+            standaloneChains: [ACTIVE_HATHOR_NETWORK.chainId],
+        } as unknown as ConstructorParameters<typeof WalletConnectModal>[0];
+        wcModal = new WalletConnectModal(modalConfig);
 
         signClient = await SignClient.init({
             projectId: PROJECT_ID,
@@ -161,9 +178,14 @@ export const WalletConnectService = {
         });
 
         // Use the official WalletConnectModal
-        if (uri && wcModal) {
-            console.log('[WC] Opening modal with URI');
-            wcModal.openModal({ uri, standaloneChains: requiredNamespaces.hathor.chains });
+        if (uri) {
+            if (isMobileWalletConnectFlow()) {
+                console.log('[WC] Opening Hathor Wallet deep link');
+                openHathorWalletDeepLink(uri);
+            } else if (wcModal) {
+                console.log('[WC] Opening modal with URI');
+                wcModal.openModal({ uri, standaloneChains: requiredNamespaces.hathor.chains });
+            }
         }
 
         try {
@@ -458,6 +480,7 @@ export const WalletConnectService = {
      * Close the WalletConnect modal
      */
     closeModal(): void {
+        wcModal?.closeModal?.();
         document.getElementById('wc-modal')?.remove();
     },
 
