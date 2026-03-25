@@ -211,17 +211,18 @@ const PollApp = () => {
   }, [selectedPoll])
 
   useEffect(() => {
-    if (!selectedPoll || !address) {
+    if (selectedPollId === null || !address) {
       setSelectedVote(EMPTY_VOTE)
       setCheckingVoteStatus(false)
       return
     }
 
     let cancelled = false
+    const pollId = selectedPollId
     setSelectedVote(EMPTY_VOTE)
     setCheckingVoteStatus(true)
 
-    fetchVote(selectedPoll.id, address)
+    fetchVote(pollId, address)
       .then((vote) => {
         if (!cancelled) {
           setSelectedVote(vote)
@@ -241,7 +242,7 @@ const PollApp = () => {
     return () => {
       cancelled = true
     }
-  }, [address, selectedPoll])
+  }, [address, selectedPollId])
 
   useEffect(() => {
     if (!pendingTx) return undefined
@@ -291,6 +292,17 @@ const PollApp = () => {
           setPendingTx(null)
           await loadPolls()
           if (cancelled) return
+
+          if (address && typeof pendingTx.pollId === 'number' && pendingTx.pollId === selectedPollId) {
+            try {
+              const refreshedVote = await fetchVote(pendingTx.pollId, address)
+              if (cancelled) return
+              setSelectedVote(refreshedVote)
+            } catch {
+              if (cancelled) return
+            }
+          }
+
           setStatus(`${txLabel} confirmed on-chain.`)
           setIsSuccess(true)
           return
@@ -311,7 +323,7 @@ const PollApp = () => {
       if (timeoutId) clearTimeout(timeoutId)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [address, pendingTx])
+  }, [address, pendingTx, selectedPollId])
 
   const handleOptionChange = (index: number, value: string) => {
     const next = [...options]
@@ -873,9 +885,9 @@ const PollApp = () => {
                 <span className="section-kicker">Checklist</span>
                 <h3>Before you publish</h3>
                 <ul className="aside-list">
-                  <li>Confirm the token UID is the asset voters will deposit.</li>
-                  <li>Use tomorrow or a custom date if you want an announced but unopened vote.</li>
-                  <li>All polls use linear weighting based on the deposited amount.</li>
+                  <li>Is this the correct token [UID] for voters to deposit?</li>
+                  <li>Want to announce it today but start it later? Pick a future date.</li>
+                  <li>The more you lock, the more your vote means.</li>
                 </ul>
               </div>
 

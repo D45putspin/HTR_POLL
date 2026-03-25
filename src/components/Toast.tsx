@@ -1,4 +1,5 @@
 import React from 'react'
+import { createPortal } from 'react-dom'
 
 interface ToastProps {
   visible: boolean
@@ -8,7 +9,7 @@ interface ToastProps {
 }
 
 const Toast: React.FC<ToastProps> = ({ visible, type, message, onDismiss }) => {
-  if (!visible) return null
+  if (!visible || typeof document === 'undefined') return null
 
   const icons = {
     pending: (
@@ -35,7 +36,7 @@ const Toast: React.FC<ToastProps> = ({ visible, type, message, onDismiss }) => {
     ),
   }
 
-  return (
+  return createPortal(
     <>
       <div className="toast-container">
         <div className="toast-content">
@@ -50,12 +51,11 @@ const Toast: React.FC<ToastProps> = ({ visible, type, message, onDismiss }) => {
       <style>{`
         .toast-container {
           position: fixed;
-          bottom: 24px;
-          left: 50%;
-          transform: translateX(-50%);
-          z-index: 10000;
-          animation: toastSlideUp 0.4s cubic-bezier(0.16, 1, 0.3, 1);
-          pointer-events: auto;
+          top: 88px;
+          right: 24px;
+          z-index: 2147483647;
+          animation: toastSlideIn 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+          pointer-events: none;
         }
 
         .toast-content {
@@ -72,7 +72,8 @@ const Toast: React.FC<ToastProps> = ({ visible, type, message, onDismiss }) => {
           font-size: 14px;
           font-weight: 500;
           min-width: 280px;
-          max-width: calc(100vw - 48px);
+          max-width: min(420px, calc(100vw - 48px));
+          pointer-events: auto;
         }
 
         .toast-icon {
@@ -113,13 +114,13 @@ const Toast: React.FC<ToastProps> = ({ visible, type, message, onDismiss }) => {
           animation: spin 1s linear infinite;
         }
 
-        @keyframes toastSlideUp {
+        @keyframes toastSlideIn {
           from {
-            transform: translateX(-50%) translateY(20px);
+            transform: translateY(-12px);
             opacity: 0;
           }
           to {
-            transform: translateX(-50%) translateY(0);
+            transform: translateY(0);
             opacity: 1;
           }
         }
@@ -131,10 +132,9 @@ const Toast: React.FC<ToastProps> = ({ visible, type, message, onDismiss }) => {
 
         @media (max-width: 640px) {
           .toast-container {
-            left: 0;
+            top: auto;
             right: 0;
             bottom: 0;
-            transform: none;
             animation: toastSlideUpMobile 0.4s cubic-bezier(0.16, 1, 0.3, 1);
           }
 
@@ -160,7 +160,8 @@ const Toast: React.FC<ToastProps> = ({ visible, type, message, onDismiss }) => {
           }
         }
       `}</style>
-    </>
+    </>,
+    document.body,
   )
 }
 
