@@ -1,3 +1,5 @@
+import { Address, Network } from '@hathor/wallet-lib'
+
 export interface Poll {
   id: number
   title: string
@@ -49,6 +51,7 @@ interface ContractHistoryItem {
 const RAW_NODE_URL = import.meta.env.VITE_HATHOR_NODE_URL || '/api/'
 const CONTRACT_ID = import.meta.env.VITE_POLL_CONTRACT_ID || ''
 const REQUEST_TIMEOUT_MS = Number(import.meta.env.VITE_NC_STATE_TIMEOUT_MS || 30000)
+const ACTIVE_NETWORK = import.meta.env.VITE_HATHOR_CHAIN || 'testnet'
 
 const normalizeBaseUrl = (url: string) => {
   if (!url.endsWith('/')) return `${url}/`
@@ -56,8 +59,19 @@ const normalizeBaseUrl = (url: string) => {
 }
 
 const NODE_URL = normalizeBaseUrl(RAW_NODE_URL)
+const HATHOR_NETWORK = new Network(ACTIVE_NETWORK)
 
 const DEFAULT_POLL_WEIGHTING = 'linear'
+
+const encodeCallerId = (address: string) => {
+  if (!address) return ''
+
+  try {
+    return new Address(address, { network: HATHOR_NETWORK }).decode().toString('hex')
+  } catch {
+    return address.toLowerCase()
+  }
+}
 
 const unwrapValue = (val: any) => {
   if (val && typeof val === 'object') {
@@ -210,7 +224,7 @@ export const fetchVote = async (pollId: number, address: string): Promise<VoteIn
     }
   }
 
-  const normalizedAddress = address.toLowerCase()
+  const normalizedAddress = encodeCallerId(address)
   const voteCall = `get_vote(${pollId},${JSON.stringify(normalizedAddress)})`
   const detailState = await callNanoState({ calls: [voteCall] })
   const rawVote = extractCallValueByCall(detailState?.calls, voteCall) as Record<string, unknown> | null
