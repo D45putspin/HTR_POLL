@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useWallet } from './contexts/WalletContext'
 import Toast from './components/Toast'
-import { fetchPolls, fetchTransactionStatus, getContractId, hasAddressVoted, type Poll } from './services/nano'
+import { fetchPolls, fetchTransactionStatus, fetchVote, getContractId, type Poll, type VoteInfo } from './services/nano'
 
 const blueprintId = import.meta.env.VITE_POLL_BLUEPRINT_ID || ''
 const contractId = getContractId()
@@ -63,6 +63,14 @@ const getPollPhase = (poll: Poll, now: number) => {
   return 'live'
 }
 
+const EMPTY_VOTE: VoteInfo = {
+  voted: false,
+  option: null,
+  weight: 0,
+  deposit: 0,
+  locked_until: 0,
+}
+
 const PollApp = () => {
   const { connected, address, connect, disconnect, connecting, error, signNanoContractTx } = useWallet()
   const [polls, setPolls] = useState<Poll[]>([])
@@ -71,11 +79,11 @@ const PollApp = () => {
   const [isSuccess, setIsSuccess] = useState(false)
   const [waitingWallet, setWaitingWallet] = useState(false)
   const [checkingVoteStatus, setCheckingVoteStatus] = useState(false)
-  const [selectedAlreadyVoted, setSelectedAlreadyVoted] = useState(false)
+  const [selectedVote, setSelectedVote] = useState<VoteInfo>(EMPTY_VOTE)
   const [pendingTx, setPendingTx] = useState<{
     txId: string
     label: string
-    kind: 'create' | 'vote'
+    kind: 'create' | 'vote' | 'withdraw'
     pollId?: number
   } | null>(null)
   const [view, setView] = useState<'polls' | 'create'>('polls')
@@ -91,6 +99,7 @@ const PollApp = () => {
   })
   const [options, setOptions] = useState<string[]>(['', ''])
   const [voteInputs, setVoteInputs] = useState<Record<number, { option: number; amount: string }>>({})
+  const [withdrawInputs, setWithdrawInputs] = useState<Record<number, string>>({})
 
   const isReady = Boolean(contractId)
   const now = Math.floor(Date.now() / 1000)
@@ -203,23 +212,24 @@ const PollApp = () => {
 
   useEffect(() => {
     if (!selectedPoll || !address) {
-      setSelectedAlreadyVoted(false)
+      setSelectedVote(EMPTY_VOTE)
       setCheckingVoteStatus(false)
       return
     }
 
     let cancelled = false
+    setSelectedVote(EMPTY_VOTE)
     setCheckingVoteStatus(true)
 
-    hasAddressVoted(selectedPoll.id, address)
-      .then((alreadyVoted) => {
+    fetchVote(selectedPoll.id, address)
+      .then((vote) => {
         if (!cancelled) {
-          setSelectedAlreadyVoted(alreadyVoted)
+          setSelectedVote(vote)
         }
       })
       .catch(() => {
         if (!cancelled) {
-          setSelectedAlreadyVoted(false)
+          setSelectedVote(EMPTY_VOTE)
         }
       })
       .finally(() => {
@@ -255,9 +265,9 @@ const PollApp = () => {
 
             if (isContractFailure && typeof pendingTx.pollId === 'number' && address) {
               try {
-                const alreadyVoted = await hasAddressVoted(pendingTx.pollId, address)
+                const existingVote = await fetchVote(pendingTx.pollId, address)
                 if (cancelled) return
-                if (alreadyVoted) {
+                if (existingVote.voted) {
                   setStatus('This wallet already voted in this poll. One vote per wallet is allowed.')
                 } else {
                   setStatus('Vote was rejected by the contract. Please check poll timing and try again.')
@@ -417,7 +427,7 @@ const PollApp = () => {
       return
     }
 
-    if (selectedAlreadyVoted) {
+    if (selectedVote.voted) {
       setStatus('This wallet already voted in this poll. One vote per wallet is allowed.')
       setIsSuccess(false)
       return
@@ -425,8 +435,9 @@ const PollApp = () => {
 
     if (address) {
       try {
-        const alreadyVoted = await hasAddressVoted(poll.id, address)
-        if (alreadyVoted) {
+        const existingVote = await fetchVote(poll.id, address)
+        if (existingVote.voted) {
+          setSelectedVote(existingVote)
           setStatus('This wallet already voted in this poll. One vote per wallet is allowed.')
           setIsSuccess(false)
           return
@@ -470,11 +481,89 @@ const PollApp = () => {
     }
   }
 
+  const handleWithdraw = async (poll: Poll) => {
+    if (waitingWallet || pendingTx) {
+      setStatus('Another transaction is in progress. Wait for confirmation before sending a new one.')
+      return
+    }
+
+    if (!connected || !address) {
+      setStatus('Connect your wallet to withdraw your vote deposit.')
+      return
+    }
+
+    if (now <= poll.end_at) {
+      setStatus(`Vote deposits unlock after ${formatDateTime(poll.end_at)}.`)
+      setIsSuccess(false)
+      return
+    }
+
+    let vote = selectedVote
+
+    try {
+      vote = await fetchVote(poll.id, address)
+      setSelectedVote(vote)
+    } catch {
+      // If the fresh read fails, keep the last known dialog state.
+    }
+
+    if (!vote.voted || vote.deposit <= 0) {
+      setStatus('No deposited balance is available to withdraw for this wallet.')
+      setIsSuccess(false)
+      return
+    }
+
+    const rawAmount = withdrawInputs[poll.id] ?? String(vote.deposit)
+    const amount = Number(rawAmount || 0)
+    if (!Number.isFinite(amount) || amount <= 0) {
+      setStatus('Enter a valid withdrawal amount.')
+      setIsSuccess(false)
+      return
+    }
+
+    if (amount > vote.deposit) {
+      setStatus(`You can withdraw up to ${vote.deposit}.`)
+      setIsSuccess(false)
+      return
+    }
+
+    try {
+      setWaitingWallet(true)
+      const result = await signNanoContractTx({
+        method: 'withdraw_vote',
+        args: [poll.id],
+        actions: [{ type: 'withdrawal', token: poll.token_uid, amount: String(amount), address }],
+        ncId: contractId,
+        blueprintId,
+      })
+
+      if (result?.txId) {
+        setPendingTx({ txId: result.txId, label: 'Vote withdrawal', kind: 'withdraw', pollId: poll.id })
+        setStatus('Vote withdrawal submitted. Waiting for blockchain confirmation...')
+      } else {
+        setStatus('Vote withdrawal transaction submitted.')
+      }
+
+      await loadPolls()
+      setIsSuccess(true)
+    } catch (err: any) {
+      setStatus(err?.message || 'Vote withdrawal failed.')
+      setIsSuccess(false)
+    } finally {
+      setWaitingWallet(false)
+    }
+  }
+
   const selectedInput = selectedPoll ? (voteInputs[selectedPoll.id] || { option: 0, amount: '' }) : { option: 0, amount: '' }
   const selectedResults = selectedPoll?.results || []
   const selectedTotalWeight = selectedResults.reduce((sum, result) => sum + (result.weight || 0), 0)
   const selectedPhase = selectedPoll ? getPollPhase(selectedPoll, now) : 'closed'
   const selectedIsLive = selectedPhase === 'live'
+  const selectedAlreadyVoted = selectedVote.voted
+  const selectedCanWithdraw = Boolean(selectedPoll && address && selectedPhase === 'closed' && selectedVote.deposit > 0)
+  const selectedWithdrawAmount = selectedPoll
+    ? (withdrawInputs[selectedPoll.id] ?? (selectedVote.deposit > 0 ? String(selectedVote.deposit) : ''))
+    : ''
 
   return (
     <div className="app-shell">
@@ -913,7 +1002,46 @@ const PollApp = () => {
 
                 {selectedAlreadyVoted && (
                   <div className="dialog-note">
-                    You already voted in this poll with this wallet.
+                    You already voted in this poll with this wallet for {selectedVote.weight} weight.
+                  </div>
+                )}
+
+                {selectedCanWithdraw && selectedPoll && (
+                  <>
+                    <div className="dialog-note">
+                      Remaining deposit available to withdraw: {selectedVote.deposit} {selectedPoll.token_uid === '00' ? 'HTR' : shortAddr(selectedPoll.token_uid)}.
+                    </div>
+                    <div className="vote-submit-row">
+                      <input
+                        type="number"
+                        className="input"
+                        placeholder="Amount to withdraw"
+                        value={selectedWithdrawAmount}
+                        onChange={(event) => setWithdrawInputs((previous) => ({
+                          ...previous,
+                          [selectedPoll.id]: event.target.value,
+                        }))}
+                      />
+                      <button
+                        className="btn btn-outline"
+                        onClick={() => handleWithdraw(selectedPoll)}
+                        disabled={
+                          !selectedWithdrawAmount ||
+                          waitingWallet ||
+                          Boolean(pendingTx) ||
+                          checkingVoteStatus
+                        }
+                        type="button"
+                      >
+                        Withdraw
+                      </button>
+                    </div>
+                  </>
+                )}
+
+                {selectedPhase === 'closed' && selectedAlreadyVoted && selectedVote.deposit === 0 && (
+                  <div className="dialog-note">
+                    Your deposited voting balance for this poll has already been withdrawn.
                   </div>
                 )}
 

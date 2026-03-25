@@ -19,6 +19,14 @@ export interface PollResult {
   votes: number
 }
 
+export interface VoteInfo {
+  voted: boolean
+  option: number | null
+  weight: number
+  deposit: number
+  locked_until: number
+}
+
 export interface TransactionStatus {
   firstBlock: string | null
   isVoided: boolean
@@ -189,6 +197,33 @@ export const hasAddressVoted = async (pollId: number, address: string): Promise<
     const voter = (entry?.nc_context?.caller_id || entry?.nc_context?.address || '').toLowerCase()
     return votePollId === pollId && voter === targetAddress
   })
+}
+
+export const fetchVote = async (pollId: number, address: string): Promise<VoteInfo> => {
+  if (!address) {
+    return {
+      voted: false,
+      option: null,
+      weight: 0,
+      deposit: 0,
+      locked_until: 0,
+    }
+  }
+
+  const normalizedAddress = address.toLowerCase()
+  const voteCall = `get_vote(${pollId},${JSON.stringify(normalizedAddress)})`
+  const detailState = await callNanoState({ calls: [voteCall] })
+  const rawVote = extractCallValueByCall(detailState?.calls, voteCall) as Record<string, unknown> | null
+
+  const voted = String(rawVote?.voted || 'false') === 'true'
+
+  return {
+    voted,
+    option: voted ? Number(rawVote?.option ?? -1) : null,
+    weight: voted ? Number(rawVote?.weight ?? 0) : 0,
+    deposit: voted ? Number(rawVote?.deposit ?? 0) : 0,
+    locked_until: voted ? Number(rawVote?.locked_until ?? 0) : 0,
+  }
 }
 
 const parseCreatePollArgs = (args: unknown[] = []) => {
