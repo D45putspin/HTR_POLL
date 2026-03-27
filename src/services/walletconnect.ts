@@ -11,6 +11,7 @@ const HATHOR_WALLET_DEEP_LINK_SCHEME = 'hathorwallet';
 // Required methods for Hathor wallet - match pXiel exactly
 const REQUIRED_METHODS = ['htr_signWithAddress', 'htr_sendNanoContractTx'];
 const OPTIONAL_METHODS = ['htr_createToken', 'htr_sendTransaction'];
+const MOBILE_APPROVAL_METHODS = new Set([...REQUIRED_METHODS, ...OPTIONAL_METHODS]);
 
 export interface WalletConnectState {
     client: SignClient | null;
@@ -66,10 +67,25 @@ const isMobileWalletConnectFlow = () => {
     return /Android|iPhone|iPad|iPod/i.test(window.navigator.userAgent);
 };
 
-const openHathorWalletDeepLink = (wcUri: string) => {
+const getSessionRequestDeepLink = (session: any): string => {
+    const nativeRedirect = session?.peer?.metadata?.redirect?.native;
+    if (typeof nativeRedirect === 'string' && nativeRedirect.trim()) {
+        return nativeRedirect.trim();
+    }
+
+    if (session?.topic) {
+        return `${HATHOR_WALLET_DEEP_LINK_SCHEME}://wc?uri=${encodeURIComponent(`wc:${session.topic}@2`)}`;
+    }
+
+    return `${HATHOR_WALLET_DEEP_LINK_SCHEME}://`;
+};
+
+const openHathorWalletDeepLink = (wcUri?: string, session?: any) => {
     if (typeof window === 'undefined') return;
 
-    const deepLink = `${HATHOR_WALLET_DEEP_LINK_SCHEME}://wc?uri=${encodeURIComponent(wcUri)}`;
+    const deepLink = wcUri
+        ? `${HATHOR_WALLET_DEEP_LINK_SCHEME}://wc?uri=${encodeURIComponent(wcUri)}`
+        : getSessionRequestDeepLink(session);
     window.location.href = deepLink;
 };
 
@@ -298,14 +314,21 @@ export const WalletConnectService = {
 
         console.log(`[WC] Sending ${method} to ${chainId} using namespace ${namespaceKey}`);
 
-        return await signClient.request({
+        const requestPromise = signClient.request({
             topic: currentSession.topic,
             chainId,
             request: {
                 method,
                 params
             }
-        });
+        }) as Promise<T>;
+
+        if (isMobileWalletConnectFlow() && MOBILE_APPROVAL_METHODS.has(method)) {
+            console.log('[WC] Opening Hathor Wallet for mobile request approval');
+            openHathorWalletDeepLink(undefined, currentSession);
+        }
+
+        return await requestPromise;
     },
 
     /**
