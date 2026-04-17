@@ -192,7 +192,7 @@ const PollApp = () => {
         .catch(() => {
           // silent background sync
         })
-    }, 8000)
+    }, 30000)
 
     return () => clearInterval(intervalId)
   }, [])
@@ -312,7 +312,7 @@ const PollApp = () => {
       }
 
       if (!cancelled) {
-        timeoutId = setTimeout(checkConfirmation, 5000)
+        timeoutId = setTimeout(checkConfirmation, 10000)
       }
     }
 
