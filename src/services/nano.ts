@@ -264,10 +264,8 @@ const parseCreatePollArgs = (args: unknown[] = []) => {
   }
 }
 
-const fetchPollResults = async (pollId: number, fallbackOptions: string[]): Promise<PollResult[]> => {
-  const resultsCall = `get_poll_results(${pollId})`
-  const detailState = await callNanoState({ calls: [resultsCall] })
-  const rawResults = extractCallValueByCall(detailState?.calls, resultsCall) as Array<[number, number, number]>
+const parsePollResultsFromState = (callsResult: any, resultsCall: string, fallbackOptions: string[]): PollResult[] => {
+  const rawResults = extractCallValueByCall(callsResult, resultsCall) as Array<[number, number, number]>
 
   if (!Array.isArray(rawResults)) {
     return []
@@ -283,6 +281,12 @@ const fetchPollResults = async (pollId: number, fallbackOptions: string[]): Prom
   })
 }
 
+const fetchPollResults = async (pollId: number, fallbackOptions: string[]): Promise<PollResult[]> => {
+  const resultsCall = `get_poll_results(${pollId})`
+  const detailState = await callNanoState({ calls: [resultsCall] })
+  return parsePollResultsFromState(detailState?.calls, resultsCall, fallbackOptions)
+}
+
 export const fetchPollCount = async (): Promise<number> => {
   const state = await callNanoState({ calls: ['get_poll_count()'] })
   const count = extractCallValue(state?.calls, 'get_poll_count')
@@ -290,20 +294,8 @@ export const fetchPollCount = async (): Promise<number> => {
   return Number.isFinite(numeric) ? numeric : 0
 }
 
-export const fetchPoll = async (pollId: number): Promise<Poll> => {
-  const history = await callNanoHistory()
-  const createPollEntries = history
-    .filter((entry) => entry?.nc_method === 'create_poll' && !entry?.is_voided)
-    .sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0))
-
-  const entry = createPollEntries[pollId]
-  if (!entry) {
-    throw new Error('Poll not found')
-  }
-
-  const poll = parseCreatePollArgs(entry.nc_args_decoded)
-  const results = await fetchPollResults(pollId, poll.options)
-
+const buildPollFromEntry = (pollId: number, entry: ContractHistoryItem, results: PollResult[]): Poll => {
+  const poll = parseCreatePollArgs(entry.nc_args_decoded as unknown[])
   return {
     id: pollId,
     title: poll.title || `Poll #${pollId + 1}`,
@@ -320,10 +312,49 @@ export const fetchPoll = async (pollId: number): Promise<Poll> => {
   }
 }
 
+export const fetchPoll = async (pollId: number): Promise<Poll> => {
+  const history = await callNanoHistory()
+  const createPollEntries = history
+    .filter((entry) => entry?.nc_method === 'create_poll' && !entry?.is_voided)
+    .sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0))
+
+  const entry = createPollEntries[pollId]
+  if (!entry) {
+    throw new Error('Poll not found')
+  }
+
+  const results = await fetchPollResults(pollId, parseCreatePollArgs(entry.nc_args_decoded as unknown[]).options)
+  return buildPollFromEntry(pollId, entry, results)
+}
+
 export const fetchPolls = async (limit = 20): Promise<Poll[]> => {
+  // 1 request: get poll count
   const count = await fetchPollCount()
   const max = Math.min(count, limit)
-  return Promise.all(Array.from({ length: max }, (_, index) => fetchPoll(index)))
+  if (max === 0) return []
+
+  // 1 request: get all history entries at once
+  const history = await callNanoHistory()
+  const createPollEntries = history
+    .filter((entry) => entry?.nc_method === 'create_poll' && !entry?.is_voided)
+    .sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0))
+
+  // Parse options from each entry (no network call)
+  const entries = Array.from({ length: max }, (_, i) => ({
+    index: i,
+    entry: createPollEntries[i],
+    parsed: createPollEntries[i] ? parseCreatePollArgs(createPollEntries[i].nc_args_decoded as unknown[]) : null,
+  })).filter((item) => item.entry && item.parsed)
+
+  // 1 request: batch all get_poll_results calls into a single state call
+  const resultsCalls = entries.map((item) => `get_poll_results(${item.index})`)
+  const batchedState = resultsCalls.length > 0 ? await callNanoState({ calls: resultsCalls }) : null
+
+  return entries.map((item) => {
+    const resultsCall = `get_poll_results(${item.index})`
+    const results = parsePollResultsFromState(batchedState?.calls, resultsCall, item.parsed!.options)
+    return buildPollFromEntry(item.index, item.entry!, results)
+  })
 }
 
 export const getContractId = () => CONTRACT_ID
